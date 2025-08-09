@@ -11,7 +11,11 @@ sys.path.insert(0, backend_path)
 
 from models import Course, Lesson, CourseChunk
 from vector_store import SearchResults
-from tests.fixtures.sample_data import SAMPLE_COURSES, SAMPLE_CHUNKS, SAMPLE_SEARCH_RESULTS
+from tests.fixtures.sample_data import (
+    SAMPLE_COURSES,
+    SAMPLE_CHUNKS,
+    SAMPLE_SEARCH_RESULTS,
+)
 
 
 @pytest.fixture
@@ -36,27 +40,33 @@ def sample_chunks():
 def mock_vector_store():
     """Mock VectorStore for testing"""
     mock_store = Mock()
-    
+
     # Mock successful search results
     mock_store.search.return_value = SearchResults(
         documents=["Sample course content about MCP fundamentals"],
-        metadata=[{"course_title": "MCP: Build Rich-Context AI Apps", "lesson_number": 1}],
+        metadata=[
+            {"course_title": "MCP: Build Rich-Context AI Apps", "lesson_number": 1}
+        ],
         distances=[0.1],
-        error=None
+        error=None,
     )
-    
+
     # Mock course catalog query
     mock_store.course_catalog.query.return_value = {
-        'documents': [['MCP: Build Rich-Context AI Apps']],
-        'metadatas': [[{
-            'title': 'MCP: Build Rich-Context AI Apps',
-            'instructor': 'Elie Schoppik',
-            'course_link': 'https://www.deeplearning.ai/short-courses/mcp-build-rich-context-ai-apps/',
-            'lessons_json': '[]',
-            'lesson_count': 0
-        }]]
+        "documents": [["MCP: Build Rich-Context AI Apps"]],
+        "metadatas": [
+            [
+                {
+                    "title": "MCP: Build Rich-Context AI Apps",
+                    "instructor": "Elie Schoppik",
+                    "course_link": "https://www.deeplearning.ai/short-courses/mcp-build-rich-context-ai-apps/",
+                    "lessons_json": "[]",
+                    "lesson_count": 0,
+                }
+            ]
+        ],
     }
-    
+
     return mock_store
 
 
@@ -65,10 +75,7 @@ def mock_vector_store_empty():
     """Mock VectorStore that returns empty results"""
     mock_store = Mock()
     mock_store.search.return_value = SearchResults(
-        documents=[],
-        metadata=[],
-        distances=[],
-        error=None
+        documents=[], metadata=[], distances=[], error=None
     )
     return mock_store
 
@@ -78,10 +85,7 @@ def mock_vector_store_error():
     """Mock VectorStore that returns error results"""
     mock_store = Mock()
     mock_store.search.return_value = SearchResults(
-        documents=[],
-        metadata=[],
-        distances=[],
-        error="Database connection failed"
+        documents=[], metadata=[], distances=[], error="Database connection failed"
     )
     return mock_store
 
@@ -90,13 +94,13 @@ def mock_vector_store_error():
 def mock_anthropic_client():
     """Mock Anthropic client for testing"""
     mock_client = Mock()
-    
+
     # Mock successful response
     mock_response = Mock()
     mock_response.content = [Mock(text="This is a sample response")]
     mock_response.stop_reason = "end_turn"
     mock_client.messages.create.return_value = mock_response
-    
+
     return mock_client
 
 
@@ -104,24 +108,27 @@ def mock_anthropic_client():
 def mock_anthropic_client_with_tools():
     """Mock Anthropic client that triggers tool use"""
     mock_client = Mock()
-    
+
     # Mock initial tool use response
     mock_tool_content = Mock()
     mock_tool_content.type = "tool_use"
     mock_tool_content.name = "search_course_content"
     mock_tool_content.input = {"query": "test query"}
     mock_tool_content.id = "tool_123"
-    
+
     mock_initial_response = Mock()
     mock_initial_response.content = [mock_tool_content]
     mock_initial_response.stop_reason = "tool_use"
-    
+
     # Mock final response after tool execution
     mock_final_response = Mock()
     mock_final_response.content = [Mock(text="Final response after tool execution")]
-    
-    mock_client.messages.create.side_effect = [mock_initial_response, mock_final_response]
-    
+
+    mock_client.messages.create.side_effect = [
+        mock_initial_response,
+        mock_final_response,
+    ]
+
     return mock_client
 
 
@@ -138,8 +145,8 @@ def mock_tool_manager():
                 "properties": {
                     "query": {"type": "string", "description": "Search query"}
                 },
-                "required": ["query"]
-            }
+                "required": ["query"],
+            },
         }
     ]
     mock_manager.execute_tool.return_value = "Sample search results"
@@ -172,38 +179,40 @@ def temp_chroma_path(tmp_path):
 def mock_anthropic_client_two_rounds():
     """Mock Anthropic client that supports two rounds of tool calling"""
     mock_client = Mock()
-    
+
     # Round 1: Tool use response
     mock_tool_content_1 = Mock()
     mock_tool_content_1.type = "tool_use"
     mock_tool_content_1.name = "get_course_outline"
     mock_tool_content_1.input = {"course_title": "MCP"}
     mock_tool_content_1.id = "tool_123"
-    
+
     mock_response_1 = Mock()
     mock_response_1.content = [mock_tool_content_1]
     mock_response_1.stop_reason = "tool_use"
-    
+
     # Round 2: Another tool use response
     mock_tool_content_2 = Mock()
     mock_tool_content_2.type = "tool_use"
     mock_tool_content_2.name = "search_course_content"
     mock_tool_content_2.input = {"query": "MCP fundamentals"}
     mock_tool_content_2.id = "tool_456"
-    
+
     mock_response_2 = Mock()
     mock_response_2.content = [mock_tool_content_2]
     mock_response_2.stop_reason = "tool_use"
-    
+
     # Final response after max rounds
     mock_final_response = Mock()
     mock_final_response.content = [Mock(text="Final response after two rounds")]
-    
+
     # Set up call sequence: round1 -> round2 -> final
     mock_client.messages.create.side_effect = [
-        mock_response_1, mock_response_2, mock_final_response
+        mock_response_1,
+        mock_response_2,
+        mock_final_response,
     ]
-    
+
     return mock_client
 
 
@@ -211,24 +220,24 @@ def mock_anthropic_client_two_rounds():
 def mock_anthropic_client_terminating():
     """Mock Anthropic client that terminates after first round"""
     mock_client = Mock()
-    
+
     # Round 1: Tool use response
     mock_tool_content = Mock()
     mock_tool_content.type = "tool_use"
     mock_tool_content.name = "search_course_content"
     mock_tool_content.input = {"query": "test query"}
     mock_tool_content.id = "tool_123"
-    
+
     mock_response_1 = Mock()
     mock_response_1.content = [mock_tool_content]
     mock_response_1.stop_reason = "tool_use"
-    
+
     # Round 2: End turn (no more tools)
     mock_response_2 = Mock()
     mock_response_2.content = [Mock(text="Final response after one round")]
     mock_response_2.stop_reason = "end_turn"
-    
+
     # Set up call sequence: round1 -> early termination
     mock_client.messages.create.side_effect = [mock_response_1, mock_response_2]
-    
+
     return mock_client

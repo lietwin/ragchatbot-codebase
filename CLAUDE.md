@@ -15,7 +15,16 @@ cd backend && uv run uvicorn app:app --reload --port 8000
 
 ### Package management
 - Install dependencies: `uv sync`
+- Install dev dependencies: `uv sync --group dev`
 - Python package manager: `uv` (not pip)
+
+### Code Quality
+- Format code: `./scripts/format.sh` or `uv run black backend/ main.py`
+- Run quality checks: `./scripts/quality.sh`
+- Individual tools:
+  - Black formatting: `uv run black backend/ main.py`
+  - Flake8 linting: `uv run flake8 backend/ main.py --max-line-length=88`
+  - MyPy type checking: `uv run mypy backend/ main.py --ignore-missing-imports`
 
 ### Git operations
 - Always use `gh` CLI for git operations (not direct git commands)
