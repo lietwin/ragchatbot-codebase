@@ -166,3 +166,69 @@ def mock_config():
 def temp_chroma_path(tmp_path):
     """Temporary ChromaDB path for testing"""
     return str(tmp_path / "test_chroma")
+
+
+@pytest.fixture
+def mock_anthropic_client_two_rounds():
+    """Mock Anthropic client that supports two rounds of tool calling"""
+    mock_client = Mock()
+    
+    # Round 1: Tool use response
+    mock_tool_content_1 = Mock()
+    mock_tool_content_1.type = "tool_use"
+    mock_tool_content_1.name = "get_course_outline"
+    mock_tool_content_1.input = {"course_title": "MCP"}
+    mock_tool_content_1.id = "tool_123"
+    
+    mock_response_1 = Mock()
+    mock_response_1.content = [mock_tool_content_1]
+    mock_response_1.stop_reason = "tool_use"
+    
+    # Round 2: Another tool use response
+    mock_tool_content_2 = Mock()
+    mock_tool_content_2.type = "tool_use"
+    mock_tool_content_2.name = "search_course_content"
+    mock_tool_content_2.input = {"query": "MCP fundamentals"}
+    mock_tool_content_2.id = "tool_456"
+    
+    mock_response_2 = Mock()
+    mock_response_2.content = [mock_tool_content_2]
+    mock_response_2.stop_reason = "tool_use"
+    
+    # Final response after max rounds
+    mock_final_response = Mock()
+    mock_final_response.content = [Mock(text="Final response after two rounds")]
+    
+    # Set up call sequence: round1 -> round2 -> final
+    mock_client.messages.create.side_effect = [
+        mock_response_1, mock_response_2, mock_final_response
+    ]
+    
+    return mock_client
+
+
+@pytest.fixture
+def mock_anthropic_client_terminating():
+    """Mock Anthropic client that terminates after first round"""
+    mock_client = Mock()
+    
+    # Round 1: Tool use response
+    mock_tool_content = Mock()
+    mock_tool_content.type = "tool_use"
+    mock_tool_content.name = "search_course_content"
+    mock_tool_content.input = {"query": "test query"}
+    mock_tool_content.id = "tool_123"
+    
+    mock_response_1 = Mock()
+    mock_response_1.content = [mock_tool_content]
+    mock_response_1.stop_reason = "tool_use"
+    
+    # Round 2: End turn (no more tools)
+    mock_response_2 = Mock()
+    mock_response_2.content = [Mock(text="Final response after one round")]
+    mock_response_2.stop_reason = "end_turn"
+    
+    # Set up call sequence: round1 -> early termination
+    mock_client.messages.create.side_effect = [mock_response_1, mock_response_2]
+    
+    return mock_client
