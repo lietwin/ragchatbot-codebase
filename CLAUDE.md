@@ -4,72 +4,132 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Development Commands
 
-### Starting the application
+### Running the Application
 ```bash
+# Quick start using shell script
+chmod +x run.sh
 ./run.sh
-```
-Or manually:
-```bash
+
+# Manual start
 cd backend && uv run uvicorn app:app --reload --port 8000
 ```
 
-### Package management
-- Install dependencies: `uv sync`
-- Install dev dependencies: `uv sync --group dev`
-- Python package manager: `uv` (not pip)
+### Environment Setup
+```bash
+# Install dependencies
+uv sync
 
-### Code Quality
-- Format code: `./scripts/format.sh` or `uv run black backend/ main.py`
-- Run quality checks: `./scripts/quality.sh`
-- Individual tools:
-  - Black formatting: `uv run black backend/ main.py`
-  - Flake8 linting: `uv run flake8 backend/ main.py --max-line-length=88`
-  - MyPy type checking: `uv run mypy backend/ main.py --ignore-missing-imports`
+# Add new dependencies (use uv instead of pip)
+uv add package_name
+
+# Environment variables required
+# Create .env file with:
+ANTHROPIC_API_KEY=your_anthropic_api_key_here
+```
+
+### Python Execution
+Always use `uv` for running Python files and commands:
+```bash
+# Run Python scripts
+uv run python script.py
+
+# Run any Python command
+uv run command_name
+```
+
+### Code Quality Tools
+
+#### Prerequisites
+Install development dependencies before using code quality tools:
+```bash
+uv sync --group dev
+```
+
+#### Available Scripts
+
+**Format Script (Modifies Files)**
+```bash
+./scripts/format.sh
+```
+Use this script when you want to automatically fix code style issues. It will:
+1. Sort imports with isort
+2. Format code with Black 
+3. Run flake8 linting (reports remaining issues)
+4. Run mypy type checking
+
+**Lint Script (Read-Only Checks)**
+```bash
+./scripts/lint.sh
+```
+Use this script to verify code quality without modifying files. Perfect for:
+- Pre-commit checks
+- CI/CD pipelines
+- Verifying code before submitting PRs
+
+Exit code 0 = all checks pass, non-zero = issues found.
+
+#### Troubleshooting
+If scripts aren't executable: `chmod +x scripts/*.sh`
 
 ### Git operations
 - Always use `gh` CLI for git operations (not direct git commands)
 - No Claude attribution in commit messages per company rules
 
-### Environment setup
-- Required: Create `.env` file with `ANTHROPIC_API_KEY=your_key_here`
-- Python version: 3.13+
+### Application Access
+- Web Interface: http://localhost:8000
+- API Documentation: http://localhost:8000/docs
 
 ## Architecture Overview
 
-This is a full-stack RAG (Retrieval-Augmented Generation) chatbot system for querying course materials:
+This is a Retrieval-Augmented Generation (RAG) system for course materials with a FastAPI backend and vanilla JavaScript frontend.
 
-### Backend Structure (`/backend`)
-- **FastAPI application** (`app.py`) - Main web server with API endpoints
-- **RAG System** (`rag_system.py`) - Core orchestrator connecting all components
-- **Vector Store** (`vector_store.py`) - ChromaDB-based vector storage with two collections:
-  - `course_catalog`: Course metadata (titles, instructors)  
-  - `course_content`: Chunked course content for semantic search
-- **AI Generator** (`ai_generator.py`) - Anthropic Claude integration with tool support
-- **Document Processor** (`document_processor.py`) - Processes course documents into structured data
-- **Search Tools** (`search_tools.py`) - Tool-based search system for AI agent
-- **Session Manager** (`session_manager.py`) - Conversation history management
+### Core Components
 
-### Frontend (`/frontend`)
-- Simple HTML/CSS/JS interface served as static files
-- Communicates with backend via `/api/query` and `/api/courses` endpoints
+**RAGSystem (backend/rag_system.py)**: Main orchestrator that coordinates all components
+- Manages document processing, vector storage, AI generation, and search tools
+- Handles course document ingestion from the docs/ directory
+- Processes queries using tool-based search approach
 
-### Key Data Models (`models.py`)
-- `Course`: Contains title, instructor, lessons list
-- `CourseChunk`: Content chunks with course/lesson metadata
-- `Lesson`: Individual lesson with title and links
+**VectorStore (backend/vector_store.py)**: ChromaDB-based vector storage with dual collections
+- `course_catalog`: Stores course titles for name resolution
+  - Metadata: title, instructor, course_link, lesson_count, lessons_json (list of lessons with lesson_number, lesson_title, lesson_link)
+- `course_content`: Stores text chunks for semantic search
+  - Metadata: course_title, lesson_number, chunk_index
+- Supports filtered search by course name and lesson number
 
-### Tool-Based Architecture
-The system uses a tool-based approach where the AI agent can call search functions rather than direct vector similarity search. This allows for more sophisticated query handling and course resolution.
+**AIGenerator (backend/ai_generator.py)**: Anthropic Claude API integration
+- Uses claude-sonnet-4-20250514 model
+- Implements tool calling for search functionality
+- Maintains conversation history via SessionManager
 
-### Vector Storage Strategy
-- Dual collection system separates course metadata from content
-- Course names are resolved via semantic search before content filtering
-- Supports filtering by course title and lesson number
+**Search Tools (backend/search_tools.py)**: Tool-based search system
+- CourseSearchTool: Semantic search across course content with intelligent course name resolution
+- ToolManager: Manages tool registration and execution for AI model
 
-### API Endpoints
-- `POST /api/query` - Main chat endpoint (returns answer + sources)
-- `GET /api/courses` - Course analytics and statistics
-- Static files served at root (`/`)
+### Data Flow
+1. Course documents (PDF, DOCX, TXT) are loaded from docs/ directory on startup
+2. DocumentProcessor chunks content and extracts course metadata
+3. VectorStore stores both metadata and content in separate ChromaDB collections
+4. User queries trigger AI generation with access to search tools
+5. AI uses CourseSearchTool to find relevant content and generates responses
+6. Frontend displays responses with source attribution
 
-### Document Loading
-Course documents are loaded from `/docs` folder on startup. Supports PDF, DOCX, and TXT files.
+### Key Configuration (backend/config.py)
+- Chunk size: 800 characters with 100 character overlap
+- Embedding model: all-MiniLM-L6-v2 (SentenceTransformers)
+- Max search results: 5 per query
+- Conversation history: 2 message pairs
+
+### Frontend Architecture
+- Single-page application with vanilla JavaScript
+- Real-time course statistics display
+- Markdown rendering support for AI responses
+- Responsive design with sidebar for course info and suggested queries
+
+## Development Notes
+
+- The system automatically loads documents from docs/ on startup
+- ChromaDB data persists in backend/chroma_db/
+- FastAPI serves both API endpoints (/api/*) and static frontend files
+- CORS is configured for development with broad permissions
+- No-cache headers are set for static files during development

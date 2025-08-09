@@ -2,15 +2,15 @@ import warnings
 
 warnings.filterwarnings("ignore", message="resource_tracker: There appear to be.*")
 
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
-from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from pydantic import BaseModel
-from typing import List, Optional, Dict, Any
 import os
+from typing import List, Optional
 
 from config import config
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 from rag_system import RAGSystem
 
 # Initialize FastAPI app
@@ -45,7 +45,8 @@ class QueryResponse(BaseModel):
     """Response model for course queries"""
 
     answer: str
-    sources: List[Dict[str, Any]]
+    sources: List[str]
+    source_links: List[Optional[str]]
     session_id: str
 
 
@@ -54,6 +55,12 @@ class CourseStats(BaseModel):
 
     total_courses: int
     course_titles: List[str]
+
+
+class ClearSessionRequest(BaseModel):
+    """Request model for clearing a session"""
+
+    session_id: str
 
 
 # API Endpoints
@@ -69,9 +76,14 @@ async def query_documents(request: QueryRequest):
             session_id = rag_system.session_manager.create_session()
 
         # Process query using RAG system
-        answer, sources = rag_system.query(request.query, session_id)
+        answer, sources, source_links = rag_system.query(request.query, session_id)
 
-        return QueryResponse(answer=answer, sources=sources, session_id=session_id)
+        return QueryResponse(
+            answer=answer,
+            sources=sources,
+            source_links=source_links,
+            session_id=session_id,
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -85,6 +97,16 @@ async def get_course_stats():
             total_courses=analytics["total_courses"],
             course_titles=analytics["course_titles"],
         )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/clear-session")
+async def clear_session(request: ClearSessionRequest):
+    """Clear a conversation session"""
+    try:
+        rag_system.session_manager.clear_session(request.session_id)
+        return {"status": "success", "message": "Session cleared successfully"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -104,11 +126,13 @@ async def startup_event():
             print(f"Error loading documents: {e}")
 
 
-# Custom static file handler with no-cache headers for development
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
 import os
 from pathlib import Path
+
+from fastapi.responses import FileResponse
+
+# Custom static file handler with no-cache headers for development
+from fastapi.staticfiles import StaticFiles
 
 
 class DevStaticFiles(StaticFiles):

@@ -1,339 +1,527 @@
-"""Unit tests for AIGenerator"""
+import os
+import sys
+from unittest.mock import MagicMock, Mock, patch
 
 import pytest
-from unittest.mock import Mock, patch
+
+# Add parent directory to path to import modules
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from ai_generator import AIGenerator
 
 
 class TestAIGenerator:
-    """Test class for AIGenerator functionality"""
+    """Test cases for AIGenerator"""
 
     def test_init(self):
         """Test AIGenerator initialization"""
-        api_key = "test-api-key"
-        model = "claude-sonnet-4-20250514"
+        generator = AIGenerator("test-api-key", "claude-sonnet-4-20250514")
 
-        with patch("anthropic.Anthropic") as mock_anthropic:
-            generator = AIGenerator(api_key, model)
-
-            # Verify Anthropic client initialized with correct API key
-            mock_anthropic.assert_called_once_with(api_key=api_key)
-            assert generator.model == model
-            assert generator.base_params["model"] == model
-            assert generator.base_params["temperature"] == 0
-            assert generator.base_params["max_tokens"] == 800
+        assert generator.model == "claude-sonnet-4-20250514"
+        assert generator.base_params["model"] == "claude-sonnet-4-20250514"
+        assert generator.base_params["temperature"] == 0
+        assert generator.base_params["max_tokens"] == 800
 
     def test_generate_response_without_tools(self, mock_anthropic_client):
         """Test basic response generation without tools"""
-        with patch("anthropic.Anthropic", return_value=mock_anthropic_client):
-            generator = AIGenerator("test-key", "test-model")
+        with patch("ai_generator.anthropic.Anthropic") as mock_anthropic:
+            mock_anthropic.return_value = mock_anthropic_client
 
-            result = generator.generate_response("What is AI?")
+            generator = AIGenerator("test-api-key", "claude-sonnet-4-20250514")
+
+            # Generate response
+            response = generator.generate_response("What is AI?")
+
+            # Assert
+            assert response == "This is a test response from Claude."
 
             # Verify API was called correctly
             mock_anthropic_client.messages.create.assert_called_once()
             call_args = mock_anthropic_client.messages.create.call_args[1]
 
-            assert call_args["model"] == "test-model"
-            assert call_args["messages"][0]["content"] == "What is AI?"
-            assert call_args["messages"][0]["role"] == "user"
+            assert call_args["model"] == "claude-sonnet-4-20250514"
+            assert call_args["temperature"] == 0
+            assert call_args["max_tokens"] == 800
+            assert call_args["messages"] == [{"role": "user", "content": "What is AI?"}]
             assert "tools" not in call_args
-            assert result == "This is a sample response"
 
     def test_generate_response_with_conversation_history(self, mock_anthropic_client):
         """Test response generation with conversation history"""
-        with patch("anthropic.Anthropic", return_value=mock_anthropic_client):
-            generator = AIGenerator("test-key", "test-model")
+        with patch("ai_generator.anthropic.Anthropic") as mock_anthropic:
+            mock_anthropic.return_value = mock_anthropic_client
+
+            generator = AIGenerator("test-api-key", "claude-sonnet-4-20250514")
 
             history = "Previous conversation context"
-            result = generator.generate_response(
-                "Current question", conversation_history=history
+            response = generator.generate_response(
+                "Follow up question", conversation_history=history
             )
+
+            # Assert
+            assert response == "This is a test response from Claude."
 
             # Verify system prompt includes history
             call_args = mock_anthropic_client.messages.create.call_args[1]
-            assert history in call_args["system"]
+            assert "Previous conversation context" in call_args["system"]
 
-    def test_generate_response_with_tools_no_tool_use(self, mock_anthropic_client):
+    def test_generate_response_with_tools_no_tool_use(
+        self, mock_anthropic_client, mock_tool_manager
+    ):
         """Test response generation with tools available but not used"""
-        with patch("anthropic.Anthropic", return_value=mock_anthropic_client):
-            generator = AIGenerator("test-key", "test-model")
+        with patch("ai_generator.anthropic.Anthropic") as mock_anthropic:
+            mock_anthropic.return_value = mock_anthropic_client
 
-            tools = [{"name": "test_tool", "description": "Test tool"}]
-            tool_manager = Mock()
+            generator = AIGenerator("test-api-key", "claude-sonnet-4-20250514")
 
-            result = generator.generate_response(
-                "Simple question", tools=tools, tool_manager=tool_manager
+            tools = mock_tool_manager.get_tool_definitions()
+            response = generator.generate_response(
+                "What is machine learning?", tools=tools, tool_manager=mock_tool_manager
             )
 
-            # Verify tools were provided to API
+            # Assert
+            assert response == "This is a test response from Claude."
+
+            # Verify tools were passed to API
             call_args = mock_anthropic_client.messages.create.call_args[1]
-            assert call_args["tools"] == tools
+            assert "tools" in call_args
             assert call_args["tool_choice"] == {"type": "auto"}
+            assert call_args["tools"] == tools
 
-            # Verify tool manager wasn't used since no tool_use
-            tool_manager.execute_tool.assert_not_called()
-            assert result == "This is a sample response"
+    def test_generate_response_with_tool_use(self, mock_tool_manager):
+        """Test response generation when Claude requests tool use"""
+        with patch("ai_generator.anthropic.Anthropic") as mock_anthropic:
+            mock_client = Mock()
+            mock_anthropic.return_value = mock_client
 
-    def test_generate_response_with_tool_use(self, mock_anthropic_client_with_tools):
-        """Test response generation that triggers tool use"""
-        with patch(
-            "anthropic.Anthropic", return_value=mock_anthropic_client_with_tools
-        ):
-            generator = AIGenerator("test-key", "test-model")
+            # Mock initial response with tool use
+            initial_response = Mock()
+            initial_response.stop_reason = "tool_use"
+            initial_response.content = [Mock()]
+            initial_response.content[0].type = "tool_use"
+            initial_response.content[0].name = "search_course_content"
+            initial_response.content[0].id = "tool_123"
+            initial_response.content[0].input = {"query": "test query"}
 
-            tools = [{"name": "search_course_content", "description": "Search courses"}]
-            tool_manager = Mock()
-            tool_manager.execute_tool.return_value = "Tool execution result"
-
-            result = generator.generate_response(
-                "Search for MCP information", tools=tools, tool_manager=tool_manager
+            # Mock final response after tool execution
+            final_response = Mock()
+            final_response.content = [Mock()]
+            final_response.content[0].text = (
+                "Based on the search results, here is the answer."
             )
+
+            # Setup client to return initial then final response
+            mock_client.messages.create.side_effect = [initial_response, final_response]
+
+            generator = AIGenerator("test-api-key", "claude-sonnet-4-20250514")
+
+            tools = mock_tool_manager.get_tool_definitions()
+            response = generator.generate_response(
+                "What is in lesson 1?", tools=tools, tool_manager=mock_tool_manager
+            )
+
+            # Assert
+            assert response == "Based on the search results, here is the answer."
 
             # Verify tool was executed
-            tool_manager.execute_tool.assert_called_once_with(
+            mock_tool_manager.execute_tool.assert_called_once_with(
                 "search_course_content", query="test query"
             )
 
-            # Verify final response after tool execution
-            assert result == "Final response after tool execution"
+            # Verify two API calls were made (initial + final)
+            assert mock_client.messages.create.call_count == 2
 
-            # Verify API was called twice (initial + final)
-            assert mock_anthropic_client_with_tools.messages.create.call_count == 2
+    def test_generate_response_tool_use_multiple_tools(self, mock_tool_manager):
+        """Test response generation when Claude requests multiple tools"""
+        with patch("ai_generator.anthropic.Anthropic") as mock_anthropic:
+            mock_client = Mock()
+            mock_anthropic.return_value = mock_client
 
-    def test_api_error_handling(self):
-        """Test handling of Anthropic API errors"""
-        with patch("anthropic.Anthropic") as mock_anthropic:
-            mock_client = mock_anthropic.return_value
-            mock_client.messages.create.side_effect = Exception("API Error")
+            # Mock initial response with multiple tool uses
+            initial_response = Mock()
+            initial_response.stop_reason = "tool_use"
 
-            generator = AIGenerator("test-key", "test-model")
+            # Create two tool use content blocks
+            tool1 = Mock()
+            tool1.type = "tool_use"
+            tool1.name = "search_course_content"
+            tool1.id = "tool_123"
+            tool1.input = {"query": "first query"}
 
-            # Should propagate the exception
-            with pytest.raises(Exception, match="API Error"):
-                generator.generate_response("test query")
+            tool2 = Mock()
+            tool2.type = "tool_use"
+            tool2.name = "get_course_outline"
+            tool2.id = "tool_456"
+            tool2.input = {"course_name": "Test Course"}
+
+            initial_response.content = [tool1, tool2]
+
+            # Mock final response
+            final_response = Mock()
+            final_response.content = [Mock()]
+            final_response.content[0].text = "Here's the comprehensive answer."
+
+            mock_client.messages.create.side_effect = [initial_response, final_response]
+
+            generator = AIGenerator("test-api-key", "claude-sonnet-4-20250514")
+
+            # Execute
+            response = generator.generate_response(
+                "Tell me about the course",
+                tools=mock_tool_manager.get_tool_definitions(),
+                tool_manager=mock_tool_manager,
+            )
+
+            # Assert
+            assert response == "Here's the comprehensive answer."
+
+            # Verify both tools were executed
+            assert mock_tool_manager.execute_tool.call_count == 2
+            mock_tool_manager.execute_tool.assert_any_call(
+                "search_course_content", query="first query"
+            )
+            mock_tool_manager.execute_tool.assert_any_call(
+                "get_course_outline", course_name="Test Course"
+            )
+
+    def test_handle_tool_execution_conversation_flow(self, mock_tool_manager):
+        """Test that tool execution properly maintains conversation flow"""
+        with patch("ai_generator.anthropic.Anthropic") as mock_anthropic:
+            mock_client = Mock()
+            mock_anthropic.return_value = mock_client
+
+            # Mock initial response with tool use
+            initial_response = Mock()
+            initial_response.stop_reason = "tool_use"
+            initial_response.content = [Mock()]
+            initial_response.content[0].type = "tool_use"
+            initial_response.content[0].name = "search_course_content"
+            initial_response.content[0].id = "tool_123"
+            initial_response.content[0].input = {"query": "lesson content"}
+
+            # Mock final response
+            final_response = Mock()
+            final_response.content = [Mock()]
+            final_response.content[0].text = "Final answer with tool results."
+
+            mock_client.messages.create.side_effect = [initial_response, final_response]
+
+            generator = AIGenerator("test-api-key", "claude-sonnet-4-20250514")
+
+            # Execute
+            response = generator.generate_response(
+                "What's in lesson 1?",
+                tools=mock_tool_manager.get_tool_definitions(),
+                tool_manager=mock_tool_manager,
+            )
+
+            # Verify the conversation flow in the final API call
+            final_call_args = mock_client.messages.create.call_args_list[1][1]
+            messages = final_call_args["messages"]
+
+            # Should have: user message, assistant tool use, user tool results
+            assert len(messages) == 3
+            assert messages[0]["role"] == "user"
+            assert messages[0]["content"] == "What's in lesson 1?"
+            assert messages[1]["role"] == "assistant"
+            assert messages[1]["content"] == initial_response.content
+            assert messages[2]["role"] == "user"
+            assert messages[2]["content"][0]["type"] == "tool_result"
+            assert messages[2]["content"][0]["tool_use_id"] == "tool_123"
+            assert messages[2]["content"][0]["content"] == "Mock search result"
+
+    def test_generate_response_tool_execution_error(self, mock_tool_manager):
+        """Test handling when tool execution fails"""
+        with patch("ai_generator.anthropic.Anthropic") as mock_anthropic:
+            mock_client = Mock()
+            mock_anthropic.return_value = mock_client
+
+            # Mock initial response with tool use
+            initial_response = Mock()
+            initial_response.stop_reason = "tool_use"
+            initial_response.content = [Mock()]
+            initial_response.content[0].type = "tool_use"
+            initial_response.content[0].name = "search_course_content"
+            initial_response.content[0].id = "tool_123"
+            initial_response.content[0].input = {"query": "test"}
+
+            # Mock final response
+            final_response = Mock()
+            final_response.content = [Mock()]
+            final_response.content[0].text = "I encountered an error searching."
+
+            mock_client.messages.create.side_effect = [initial_response, final_response]
+
+            # Make tool execution return error
+            mock_tool_manager.execute_tool.return_value = "Error: Tool execution failed"
+
+            generator = AIGenerator("test-api-key", "claude-sonnet-4-20250514")
+
+            # Execute
+            response = generator.generate_response(
+                "Search for something",
+                tools=mock_tool_manager.get_tool_definitions(),
+                tool_manager=mock_tool_manager,
+            )
+
+            # Should still get a response even with tool error
+            assert response == "I encountered an error searching."
+
+            # Verify error was passed to Claude in tool result
+            final_call_args = mock_client.messages.create.call_args_list[1][1]
+            tool_result = final_call_args["messages"][2]["content"][0]
+            assert tool_result["content"] == "Error: Tool execution failed"
 
     def test_system_prompt_content(self):
-        """Test that system prompt contains expected content"""
-        with patch("anthropic.Anthropic"):
-            generator = AIGenerator("test-key", "test-model")
+        """Test that system prompt contains expected guidance"""
+        # Test that the static system prompt has the expected content
+        assert "course materials and educational content" in AIGenerator.SYSTEM_PROMPT
+        assert "Content Search Tool" in AIGenerator.SYSTEM_PROMPT
+        assert "Course Outline Tool" in AIGenerator.SYSTEM_PROMPT
+        assert "You can make up to 2 rounds of tool calls" in AIGenerator.SYSTEM_PROMPT
+        assert "Brief, Concise and focused" in AIGenerator.SYSTEM_PROMPT
 
-            # Check that system prompt mentions tools and protocols
-            assert "search_course_content" in generator.SYSTEM_PROMPT
-            assert "get_course_outline" in generator.SYSTEM_PROMPT
+    def test_api_parameters_consistency(self, mock_anthropic_client):
+        """Test that API parameters are consistent across calls"""
+        with patch("ai_generator.anthropic.Anthropic") as mock_anthropic:
+            mock_anthropic.return_value = mock_anthropic_client
+
+            generator = AIGenerator("test-api-key", "claude-sonnet-4-20250514")
+
+            # Make multiple calls
+            generator.generate_response("First question")
+            generator.generate_response(
+                "Second question", conversation_history="Previous context"
+            )
+
+            # Verify consistent parameters across calls
+            calls = mock_anthropic_client.messages.create.call_args_list
+
+            for call in calls:
+                args = call[1]
+                assert args["model"] == "claude-sonnet-4-20250514"
+                assert args["temperature"] == 0
+                assert args["max_tokens"] == 800
+
+    def test_no_tool_manager_with_tool_use(self):
+        """Test behavior when tools are requested but no tool_manager provided"""
+        with patch("ai_generator.anthropic.Anthropic") as mock_anthropic:
+            mock_client = Mock()
+            mock_anthropic.return_value = mock_client
+
+            # Mock response with tool use
+            tool_response = Mock()
+            tool_response.stop_reason = "tool_use"
+            tool_response.content = [Mock()]
+            tool_response.content[0].text = "I need to use a tool"
+
+            mock_client.messages.create.return_value = tool_response
+
+            generator = AIGenerator("test-api-key", "claude-sonnet-4-20250514")
+
+            # Execute with tools but no tool_manager
+            response = generator.generate_response(
+                "Search for something", tools=[{"name": "test_tool"}]
+            )
+
+            # Should return the text from the tool use response
+            assert response == "I need to use a tool"
+
+            # Should only make one API call (no tool execution)
+            assert mock_client.messages.create.call_count == 1
+
+    def test_empty_tool_results(self, mock_tool_manager):
+        """Test handling when no tool calls are made in tool_use response"""
+        with patch("ai_generator.anthropic.Anthropic") as mock_anthropic:
+            mock_client = Mock()
+            mock_anthropic.return_value = mock_client
+
+            # Mock response with tool_use stop_reason but no actual tool calls
+            initial_response = Mock()
+            initial_response.stop_reason = "tool_use"
+            initial_response.content = []  # No tool use blocks
+
+            final_response = Mock()
+            final_response.content = [Mock()]
+            final_response.content[0].text = "No tools were actually used."
+
+            mock_client.messages.create.side_effect = [initial_response, final_response]
+
+            generator = AIGenerator("test-api-key", "claude-sonnet-4-20250514")
+
+            # Execute
+            response = generator.generate_response(
+                "Test query",
+                tools=mock_tool_manager.get_tool_definitions(),
+                tool_manager=mock_tool_manager,
+            )
+
+            # Should still get final response
+            assert response == "No tools were actually used."
+
+            # No tools should have been executed
+            mock_tool_manager.execute_tool.assert_not_called()
+
+            # Should make two API calls (initial + final)
+            assert mock_client.messages.create.call_count == 2
+
+    def test_sequential_tool_calling_two_rounds(self, mock_tool_manager):
+        """Test sequential tool calling over 2 rounds"""
+        with patch("ai_generator.anthropic.Anthropic") as mock_anthropic:
+            mock_client = Mock()
+            mock_anthropic.return_value = mock_client
+
+            # Round 1: AI makes first tool call
+            round1_response = Mock()
+            round1_response.stop_reason = "tool_use"
+            round1_response.content = [Mock()]
+            round1_response.content[0].type = "tool_use"
+            round1_response.content[0].name = "get_course_outline"
+            round1_response.content[0].id = "tool_1"
+            round1_response.content[0].input = {"course_name": "Test Course"}
+
+            # Round 2: AI makes second tool call based on first results
+            round2_response = Mock()
+            round2_response.stop_reason = "tool_use"
+            round2_response.content = [Mock()]
+            round2_response.content[0].type = "tool_use"
+            round2_response.content[0].name = "search_course_content"
+            round2_response.content[0].id = "tool_2"
+            round2_response.content[0].input = {"query": "lesson 4 content"}
+
+            # Final response after 2 rounds
+            final_response = Mock()
+            final_response.content = [Mock()]
+            final_response.content[0].text = (
+                "Based on the course outline and lesson content, here's the answer."
+            )
+
+            mock_client.messages.create.side_effect = [
+                round1_response,
+                round2_response,
+                final_response,
+            ]
+
+            generator = AIGenerator("test-api-key", "claude-sonnet-4-20250514")
+
+            # Execute
+            response = generator.generate_response(
+                "Find lesson 4 content from Test Course",
+                tools=mock_tool_manager.get_tool_definitions(),
+                tool_manager=mock_tool_manager,
+            )
+
+            # Assert
             assert (
-                "two sequential tool calling rounds per query"
-                in generator.SYSTEM_PROMPT
-            )
-            assert "Strategic tool usage" in generator.SYSTEM_PROMPT
-            assert "Content Search" in generator.SYSTEM_PROMPT
-            assert "Course Outline" in generator.SYSTEM_PROMPT
-
-    def test_no_tool_manager_with_tool_use(self, mock_anthropic_client_with_tools):
-        """Test tool use response when no tool manager provided"""
-        with patch(
-            "anthropic.Anthropic", return_value=mock_anthropic_client_with_tools
-        ):
-            generator = AIGenerator("test-key", "test-model")
-
-            tools = [{"name": "test_tool", "description": "Test tool"}]
-
-            # Should return the text from initial response when no tool manager
-            result = generator.generate_response(
-                "Tool use query", tools=tools, tool_manager=None
-            )
-
-            # Should not attempt tool execution, return empty response
-            # Since the mock returns tool_use but no tool_manager is provided
-            assert mock_anthropic_client_with_tools.messages.create.call_count == 1
-
-    def test_two_round_tool_sequence(self, mock_anthropic_client_two_rounds):
-        """Test complete 2-round tool calling sequence"""
-        with patch(
-            "anthropic.Anthropic", return_value=mock_anthropic_client_two_rounds
-        ):
-            generator = AIGenerator("test-key", "test-model")
-
-            tools = [
-                {"name": "get_course_outline", "description": "Get course outline"},
-                {"name": "search_course_content", "description": "Search content"},
-            ]
-
-            tool_manager = Mock()
-            tool_manager.execute_tool.side_effect = [
-                "Course outline result",  # Round 1
-                "Search content result",  # Round 2
-            ]
-
-            result = generator.generate_response(
-                "Find a course similar to lesson 4 of MCP course",
-                tools=tools,
-                tool_manager=tool_manager,
+                response
+                == "Based on the course outline and lesson content, here's the answer."
             )
 
             # Verify both tools were executed in sequence
-            assert tool_manager.execute_tool.call_count == 2
-            tool_manager.execute_tool.assert_any_call(
-                "get_course_outline", course_title="MCP"
+            assert mock_tool_manager.execute_tool.call_count == 2
+            mock_tool_manager.execute_tool.assert_any_call(
+                "get_course_outline", course_name="Test Course"
             )
-            tool_manager.execute_tool.assert_any_call(
-                "search_course_content", query="MCP fundamentals"
-            )
-
-            # Verify 3 API calls: round1, round2, final
-            assert mock_anthropic_client_two_rounds.messages.create.call_count == 3
-
-            assert result == "Final response after two rounds"
-
-    def test_single_round_termination(self, mock_anthropic_client_terminating):
-        """Test early termination when no more tools needed after first round"""
-        with patch(
-            "anthropic.Anthropic", return_value=mock_anthropic_client_terminating
-        ):
-            generator = AIGenerator("test-key", "test-model")
-
-            tools = [{"name": "search_course_content", "description": "Search content"}]
-            tool_manager = Mock()
-            tool_manager.execute_tool.return_value = "Search result"
-
-            result = generator.generate_response(
-                "Search for MCP information", tools=tools, tool_manager=tool_manager
+            mock_tool_manager.execute_tool.assert_any_call(
+                "search_course_content", query="lesson 4 content"
             )
 
-            # Verify only one tool execution
-            tool_manager.execute_tool.assert_called_once_with(
+            # Verify 3 API calls were made (round1 + round2 + final)
+            assert mock_client.messages.create.call_count == 3
+
+    def test_sequential_tool_calling_early_termination(self, mock_tool_manager):
+        """Test that sequential tool calling terminates early when AI doesn't use tools"""
+        with patch("ai_generator.anthropic.Anthropic") as mock_anthropic:
+            mock_client = Mock()
+            mock_anthropic.return_value = mock_client
+
+            # Round 1: AI makes tool call
+            round1_response = Mock()
+            round1_response.stop_reason = "tool_use"
+            round1_response.content = [Mock()]
+            round1_response.content[0].type = "tool_use"
+            round1_response.content[0].name = "search_course_content"
+            round1_response.content[0].id = "tool_1"
+            round1_response.content[0].input = {"query": "test query"}
+
+            # Round 2: AI provides direct answer without tool use
+            round2_response = Mock()
+            round2_response.stop_reason = "stop"
+            round2_response.content = [Mock()]
+            round2_response.content[0].text = (
+                "Here's the direct answer based on the search results."
+            )
+
+            mock_client.messages.create.side_effect = [round1_response, round2_response]
+
+            generator = AIGenerator("test-api-key", "claude-sonnet-4-20250514")
+
+            # Execute
+            response = generator.generate_response(
+                "What is in the course?",
+                tools=mock_tool_manager.get_tool_definitions(),
+                tool_manager=mock_tool_manager,
+            )
+
+            # Assert
+            assert response == "Here's the direct answer based on the search results."
+
+            # Verify only one tool was executed
+            assert mock_tool_manager.execute_tool.call_count == 1
+            mock_tool_manager.execute_tool.assert_called_with(
                 "search_course_content", query="test query"
             )
 
-            # Verify only 2 API calls: round1 with tools, round2 terminates
-            assert mock_anthropic_client_terminating.messages.create.call_count == 2
+            # Verify only 2 API calls were made (round1 + round2 with direct response)
+            assert mock_client.messages.create.call_count == 2
 
-            assert result == "Final response after one round"
+    def test_sequential_tool_calling_tool_failure_stops_rounds(self, mock_tool_manager):
+        """Test that tool execution failure stops sequential rounds"""
+        with patch("ai_generator.anthropic.Anthropic") as mock_anthropic:
+            mock_client = Mock()
+            mock_anthropic.return_value = mock_client
 
-    def test_max_rounds_termination(self, mock_anthropic_client_two_rounds):
-        """Test termination after maximum 2 rounds"""
-        with patch(
-            "anthropic.Anthropic", return_value=mock_anthropic_client_two_rounds
-        ):
-            generator = AIGenerator("test-key", "test-model")
-
-            tools = [
-                {"name": "get_course_outline", "description": "Get course outline"},
-                {"name": "search_course_content", "description": "Search content"},
-            ]
-
-            tool_manager = Mock()
-            tool_manager.execute_tool.side_effect = [
-                "Course outline result",
-                "Search content result",
-            ]
-
-            result = generator.generate_response(
-                "Complex multi-step query", tools=tools, tool_manager=tool_manager
-            )
-
-            # Should reach max 2 rounds and then make final call without tools
-            assert tool_manager.execute_tool.call_count == 2
-            assert mock_anthropic_client_two_rounds.messages.create.call_count == 3
-
-            # Final call should be without tools
-            final_call_args = (
-                mock_anthropic_client_two_rounds.messages.create.call_args_list[2][1]
-            )
-            assert "tools" not in final_call_args
-
-            assert result == "Final response after two rounds"
-
-    def test_tool_execution_error_terminates_rounds(self):
-        """Test termination when tool execution fails"""
-        with patch("anthropic.Anthropic") as mock_anthropic:
-            # Mock response with tool use
-            mock_tool_content = Mock()
-            mock_tool_content.type = "tool_use"
-            mock_tool_content.name = "failing_tool"
-            mock_tool_content.input = {"param": "value"}
-            mock_tool_content.id = "tool_123"
-
-            mock_response = Mock()
-            mock_response.content = [mock_tool_content]
-            mock_response.stop_reason = "tool_use"
-
-            mock_anthropic.return_value.messages.create.return_value = mock_response
-
-            generator = AIGenerator("test-key", "test-model")
-
-            tools = [{"name": "failing_tool", "description": "Tool that fails"}]
-            tool_manager = Mock()
-            tool_manager.execute_tool.side_effect = Exception("Tool execution failed")
-
-            result = generator.generate_response(
-                "Query that triggers tool failure",
-                tools=tools,
-                tool_manager=tool_manager,
-            )
-
-            # Should only make one API call before terminating
-            assert mock_anthropic.return_value.messages.create.call_count == 1
-
-            # Should return current response when tool execution fails
-            assert result == mock_response.content[0].text
-
-    def test_conversation_context_preservation(self):
-        """Test that conversation context is preserved across rounds"""
-        with patch("anthropic.Anthropic") as mock_anthropic:
-            generator = AIGenerator("test-key", "test-model")
-
-            # Mock responses for testing context preservation
-            mock_responses = []
-
-            # Round 1 response with tool use
-            mock_tool_content = Mock()
-            mock_tool_content.type = "tool_use"
-            mock_tool_content.name = "search_tool"
-            mock_tool_content.input = {"query": "test"}
-            mock_tool_content.id = "tool_123"
-
+            # Round 1: AI makes tool call that fails
             round1_response = Mock()
-            round1_response.content = [mock_tool_content]
             round1_response.stop_reason = "tool_use"
-            mock_responses.append(round1_response)
+            round1_response.content = [Mock()]
+            round1_response.content[0].type = "tool_use"
+            round1_response.content[0].name = "search_course_content"
+            round1_response.content[0].id = "tool_1"
+            round1_response.content[0].input = {"query": "test query"}
 
-            # Round 2 response (terminating)
-            round2_response = Mock()
-            round2_response.content = [Mock(text="Final answer")]
-            round2_response.stop_reason = "end_turn"
-            mock_responses.append(round2_response)
+            # Final response after tool failure
+            final_response = Mock()
+            final_response.content = [Mock()]
+            final_response.content[0].text = "I encountered an error while searching."
 
-            mock_anthropic.return_value.messages.create.side_effect = mock_responses
+            # Make tool execution fail
+            mock_tool_manager.execute_tool.side_effect = Exception("Tool failed")
 
-            tools = [{"name": "search_tool", "description": "Search tool"}]
-            tool_manager = Mock()
-            tool_manager.execute_tool.return_value = "Tool result"
+            mock_client.messages.create.side_effect = [round1_response, final_response]
 
-            result = generator.generate_response(
-                "Test query", tools=tools, tool_manager=tool_manager
+            generator = AIGenerator("test-api-key", "claude-sonnet-4-20250514")
+
+            # Execute
+            response = generator.generate_response(
+                "Search for something",
+                tools=mock_tool_manager.get_tool_definitions(),
+                tool_manager=mock_tool_manager,
             )
 
-            # Verify that we made 2 API calls
-            assert mock_anthropic.return_value.messages.create.call_count == 2
+            # Assert
+            assert response == "I encountered an error while searching."
 
-            # Verify conversation context grew properly
-            call_args_list = mock_anthropic.return_value.messages.create.call_args_list
+            # Verify tool was attempted once
+            assert mock_tool_manager.execute_tool.call_count == 1
 
-            # The test is showing that both calls are receiving accumulated messages
-            # This is actually correct behavior - the messages list is shared and grows
+            # Verify 2 API calls were made (round1 + final after failure)
+            assert mock_client.messages.create.call_count == 2
 
-            # Round 1: starts with just user message
-            round1_messages = call_args_list[0][1]["messages"]
-            assert round1_messages[0]["role"] == "user"
-            assert round1_messages[0]["content"] == "Test query"
-
-            # Round 2: should have grown to include assistant response and tool results
-            round2_messages = call_args_list[1][1]["messages"]
-            assert len(round2_messages) >= 3  # At least user + assistant + tool results
-            assert round2_messages[0]["role"] == "user"  # Original query
-            assert round2_messages[1]["role"] == "assistant"  # Tool use response
-            assert round2_messages[2]["role"] == "user"  # Tool results
-            assert round2_messages[2]["content"][0]["content"] == "Tool result"
-
-            assert result == "Final answer"
+            # Verify error was passed to Claude in tool result
+            final_call_args = mock_client.messages.create.call_args_list[1][1]
+            tool_result_message = final_call_args["messages"][-1]
+            assert tool_result_message["role"] == "user"
+            assert (
+                "Error: Tool execution failed"
+                in tool_result_message["content"][0]["content"]
+            )

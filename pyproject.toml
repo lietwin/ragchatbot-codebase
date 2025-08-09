@@ -12,14 +12,35 @@ dependencies = [
     "uvicorn==0.35.0",
     "python-multipart==0.0.20",
     "python-dotenv==1.1.1",
+    "pytest>=8.4.1",
+    "httpx>=0.25.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["backend/tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = [
+    "-v",
+    "--tb=short",
+    "--strict-markers",
+    "--disable-warnings",
+    "--color=yes"
+]
+markers = [
+    "unit: marks tests as unit tests",
+    "integration: marks tests as integration tests",
+    "api: marks tests as API tests",
+    "slow: marks tests as slow running"
 ]
 
 [dependency-groups]
 dev = [
-    "pytest>=8.4.1",
-    "black>=24.0.0",
-    "flake8>=7.0.0",
-    "mypy>=1.8.0",
+    "black>=25.1.0",
+    "flake8>=7.3.0",
+    "isort>=6.0.1",
+    "mypy>=1.17.1",
 ]
 
 [tool.black]
@@ -40,6 +61,17 @@ extend-exclude = '''
 )/
 '''
 
+[tool.isort]
+profile = "black"
+multi_line_output = 3
+line_length = 88
+known_first_party = ["backend"]
+
+[tool.flake8]
+max-line-length = 88
+extend-ignore = ["E203", "W503"]
+exclude = [".git", "__pycache__", ".venv", "build", "dist"]
+
 [tool.mypy]
 python_version = "3.13"
 warn_return_any = true
@@ -54,3 +86,4 @@ warn_unused_ignores = true
 warn_no_return = true
 warn_unreachable = true
 strict_equality = true
+exclude = ["build", "dist", ".venv"]

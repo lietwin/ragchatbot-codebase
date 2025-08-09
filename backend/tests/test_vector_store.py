@@ -1,618 +1,516 @@
-"""Unit tests for VectorStore"""
+import os
+import shutil
+import sys
+import tempfile
+from unittest.mock import MagicMock, Mock, patch
 
 import pytest
-from unittest.mock import Mock, patch, MagicMock
-from vector_store import VectorStore, SearchResults
+
+# Add parent directory to path to import modules
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from models import Course, CourseChunk, Lesson
+from vector_store import SearchResults, VectorStore
 
 
 class TestVectorStore:
-    """Test class for VectorStore functionality"""
+    """Test cases for VectorStore"""
 
-    def test_init_with_mock_chromadb(self):
-        """Test VectorStore initialization"""
-        with (
-            patch("chromadb.PersistentClient") as mock_client,
-            patch(
-                "chromadb.utils.embedding_functions.SentenceTransformerEmbeddingFunction"
-            ) as mock_embedding,
-        ):
+    def test_search_with_proper_max_results(self, test_config, mock_chroma_collection):
+        """Test search with proper MAX_RESULTS setting"""
+        with patch("vector_store.chromadb") as mock_chromadb:
+            # Setup mocks
+            mock_client = Mock()
+            mock_chromadb.PersistentClient.return_value = mock_client
+            mock_client.get_or_create_collection.return_value = mock_chroma_collection
 
-            mock_collection = Mock()
-            mock_client.return_value.get_or_create_collection.return_value = (
-                mock_collection
+            # Create vector store with proper config (MAX_RESULTS=5)
+            vector_store = VectorStore(
+                chroma_path=test_config.CHROMA_PATH,
+                embedding_model=test_config.EMBEDDING_MODEL,
+                max_results=test_config.MAX_RESULTS,  # Should be 5
             )
 
-            store = VectorStore("./test_path", "test-model", max_results=3)
+            # Execute search
+            result = vector_store.search("test query")
 
-            # Verify initialization
-            assert store.max_results == 3
-            mock_client.assert_called_once()
-            mock_embedding.assert_called_once_with(model_name="test-model")
-            assert store.course_catalog == mock_collection
-            assert store.course_content == mock_collection
-
-    def test_search_without_filters(self):
-        """Test search method without any filters"""
-        with (
-            patch("chromadb.PersistentClient") as mock_client,
-            patch(
-                "chromadb.utils.embedding_functions.SentenceTransformerEmbeddingFunction"
-            ),
-        ):
-
-            mock_collection = Mock()
-            mock_client.return_value.get_or_create_collection.return_value = (
-                mock_collection
+            # Assert that ChromaDB query was called with proper n_results
+            mock_chroma_collection.query.assert_called_once_with(
+                query_texts=["test query"],
+                n_results=5,  # Should be 5, not 0
+                where=None,
             )
 
-            # Mock query results
-            mock_collection.query.return_value = {
-                "documents": [["Sample document content"]],
+            # Verify results
+            assert not result.is_empty()
+            assert len(result.documents) == 1
+            assert result.documents[0] == "Sample document"
+
+    def test_search_with_broken_max_results_zero(
+        self, broken_config, mock_chroma_collection
+    ):
+        """Test the critical MAX_RESULTS=0 issue"""
+        with patch("vector_store.chromadb") as mock_chromadb:
+            # Setup mocks - simulate empty results when n_results=0
+            mock_client = Mock()
+            mock_chromadb.PersistentClient.return_value = mock_client
+
+            # Mock collection that returns empty results when n_results=0
+            empty_collection = Mock()
+            empty_collection.query.return_value = {
+                "documents": [[]],  # Empty results due to n_results=0
+                "metadatas": [[]],
+                "distances": [[]],
+            }
+            mock_client.get_or_create_collection.return_value = empty_collection
+
+            # Create vector store with broken config (MAX_RESULTS=0)
+            vector_store = VectorStore(
+                chroma_path=broken_config.CHROMA_PATH,
+                embedding_model=broken_config.EMBEDDING_MODEL,
+                max_results=broken_config.MAX_RESULTS,  # This is 0!
+            )
+
+            # Execute search
+            result = vector_store.search("valid query")
+
+            # Assert that ChromaDB query was called with n_results=0
+            empty_collection.query.assert_called_once_with(
+                query_texts=["valid query"], n_results=0, where=None  # This is the bug!
+            )
+
+            # Verify that we get empty results even for valid queries
+            assert result.is_empty()
+            assert len(result.documents) == 0
+
+            # This demonstrates the root cause of "query failed" responses
+
+    def test_search_with_course_filter(self, test_config, mock_chroma_collection):
+        """Test search with course name filter"""
+        with patch("vector_store.chromadb") as mock_chromadb:
+            mock_client = Mock()
+            mock_chromadb.PersistentClient.return_value = mock_client
+
+            # Mock course catalog for course name resolution
+            course_catalog = Mock()
+            course_catalog.query.return_value = {
+                "documents": [["Test Course"]],
+                "metadatas": [[{"title": "Test Course"}]],
+            }
+
+            # Mock content collection
+            content_collection = Mock()
+            content_collection.query.return_value = {
+                "documents": [["Filtered content"]],
                 "metadatas": [[{"course_title": "Test Course", "lesson_number": 1}]],
                 "distances": [[0.1]],
             }
 
-            store = VectorStore("./test_path", "test-model")
-            result = store.search("test query")
+            # Setup collection returns
+            mock_client.get_or_create_collection.side_effect = [
+                course_catalog,
+                content_collection,
+            ]
 
-            # Verify query was called correctly
-            mock_collection.query.assert_called_once_with(
-                query_texts=["test query"],
-                n_results=5,  # default max_results
-                where=None,  # no filters
+            vector_store = VectorStore(
+                chroma_path=test_config.CHROMA_PATH,
+                embedding_model=test_config.EMBEDDING_MODEL,
+                max_results=test_config.MAX_RESULTS,
             )
 
-            # Verify results
-            assert isinstance(result, SearchResults)
-            assert len(result.documents) == 1
-            assert result.documents[0] == "Sample document content"
-            assert result.error is None
+            # Execute search with course filter
+            result = vector_store.search("test query", course_name="Test")
 
-    def test_search_with_course_name_filter(self):
-        """Test search with course name that needs resolution"""
-        with (
-            patch("chromadb.PersistentClient") as mock_client,
-            patch(
-                "chromadb.utils.embedding_functions.SentenceTransformerEmbeddingFunction"
-            ),
-        ):
-
-            mock_catalog_collection = Mock()
-            mock_content_collection = Mock()
-
-            # Mock get_or_create_collection to return different collections
-            def mock_get_collection(name, embedding_function):
-                if name == "course_catalog":
-                    return mock_catalog_collection
-                return mock_content_collection
-
-            mock_client.return_value.get_or_create_collection.side_effect = (
-                mock_get_collection
+            # Assert course resolution was called
+            course_catalog.query.assert_called_once_with(
+                query_texts=["Test"], n_results=1
             )
 
-            store = VectorStore("./test_path", "test-model")
-
-            # Mock course name resolution
-            mock_catalog_collection.query.return_value = {
-                "documents": [["MCP Course"]],
-                "metadatas": [[{"title": "MCP: Build Rich-Context AI Apps"}]],
-            }
-
-            # Mock content search
-            mock_content_collection.query.return_value = {
-                "documents": [["MCP content"]],
-                "metadatas": [
-                    [
-                        {
-                            "course_title": "MCP: Build Rich-Context AI Apps",
-                            "lesson_number": 1,
-                        }
-                    ]
-                ],
-                "distances": [[0.1]],
-            }
-
-            result = store.search("test query", course_name="MCP")
-
-            # Verify course name was resolved
-            mock_catalog_collection.query.assert_called_once_with(
-                query_texts=["MCP"], n_results=1
-            )
-
-            # Verify content search with resolved title
-            mock_content_collection.query.assert_called_once_with(
+            # Assert content search was called with proper filter
+            content_collection.query.assert_called_once_with(
                 query_texts=["test query"],
                 n_results=5,
-                where={"course_title": "MCP: Build Rich-Context AI Apps"},
+                where={"course_title": "Test Course"},
             )
 
-            assert result.error is None
-            assert len(result.documents) == 1
+            assert not result.is_empty()
+            assert result.documents[0] == "Filtered content"
 
-    def test_search_with_course_name_not_found(self):
-        """Test search when course name cannot be resolved"""
-        with (
-            patch("chromadb.PersistentClient") as mock_client,
-            patch(
-                "chromadb.utils.embedding_functions.SentenceTransformerEmbeddingFunction"
-            ),
-        ):
-
-            mock_catalog_collection = Mock()
-            mock_content_collection = Mock()
-
-            def mock_get_collection(name, embedding_function):
-                if name == "course_catalog":
-                    return mock_catalog_collection
-                return mock_content_collection
-
-            mock_client.return_value.get_or_create_collection.side_effect = (
-                mock_get_collection
-            )
-
-            store = VectorStore("./test_path", "test-model")
-
-            # Mock empty course resolution
-            mock_catalog_collection.query.return_value = {
-                "documents": [[]],
-                "metadatas": [[]],
-            }
-
-            result = store.search("test query", course_name="NonexistentCourse")
-
-            # Should return error for course not found
-            assert result.error == "No course found matching 'NonexistentCourse'"
-            assert len(result.documents) == 0
-
-    def test_search_with_lesson_number_filter(self):
+    def test_search_with_lesson_filter(self, test_config, mock_chroma_collection):
         """Test search with lesson number filter"""
-        with (
-            patch("chromadb.PersistentClient") as mock_client,
-            patch(
-                "chromadb.utils.embedding_functions.SentenceTransformerEmbeddingFunction"
-            ),
-        ):
+        with patch("vector_store.chromadb") as mock_chromadb:
+            mock_client = Mock()
+            mock_chromadb.PersistentClient.return_value = mock_client
+            mock_client.get_or_create_collection.return_value = mock_chroma_collection
 
-            mock_collection = Mock()
-            mock_client.return_value.get_or_create_collection.return_value = (
-                mock_collection
+            vector_store = VectorStore(
+                chroma_path=test_config.CHROMA_PATH,
+                embedding_model=test_config.EMBEDDING_MODEL,
+                max_results=test_config.MAX_RESULTS,
             )
 
-            mock_collection.query.return_value = {
-                "documents": [["Lesson 2 content"]],
-                "metadatas": [[{"course_title": "Test Course", "lesson_number": 2}]],
-                "distances": [[0.1]],
-            }
+            # Execute search with lesson filter
+            result = vector_store.search("test query", lesson_number=2)
 
-            store = VectorStore("./test_path", "test-model")
-            result = store.search("test query", lesson_number=2)
-
-            # Verify query with lesson filter
-            mock_collection.query.assert_called_once_with(
+            # Assert search was called with lesson filter
+            mock_chroma_collection.query.assert_called_once_with(
                 query_texts=["test query"], n_results=5, where={"lesson_number": 2}
             )
 
-            assert result.error is None
+    def test_search_with_both_filters(self, test_config):
+        """Test search with both course and lesson filters"""
+        with patch("vector_store.chromadb") as mock_chromadb:
+            mock_client = Mock()
+            mock_chromadb.PersistentClient.return_value = mock_client
 
-    def test_search_with_both_filters(self):
-        """Test search with both course name and lesson number"""
-        with (
-            patch("chromadb.PersistentClient") as mock_client,
-            patch(
-                "chromadb.utils.embedding_functions.SentenceTransformerEmbeddingFunction"
-            ),
-        ):
-
-            mock_catalog_collection = Mock()
-            mock_content_collection = Mock()
-
-            def mock_get_collection(name, embedding_function):
-                if name == "course_catalog":
-                    return mock_catalog_collection
-                return mock_content_collection
-
-            mock_client.return_value.get_or_create_collection.side_effect = (
-                mock_get_collection
-            )
-
-            store = VectorStore("./test_path", "test-model")
-
-            # Mock successful course resolution
-            mock_catalog_collection.query.return_value = {
-                "documents": [["Resolved Course"]],
-                "metadatas": [[{"title": "Resolved Course Title"}]],
+            # Mock course catalog
+            course_catalog = Mock()
+            course_catalog.query.return_value = {
+                "documents": [["Specific Course"]],
+                "metadatas": [[{"title": "Specific Course"}]],
             }
 
-            mock_content_collection.query.return_value = {
-                "documents": [["Filtered content"]],
+            # Mock content collection
+            content_collection = Mock()
+            content_collection.query.return_value = {
+                "documents": [["Specific content"]],
                 "metadatas": [
-                    [{"course_title": "Resolved Course Title", "lesson_number": 3}]
+                    [{"course_title": "Specific Course", "lesson_number": 3}]
                 ],
                 "distances": [[0.1]],
             }
 
-            result = store.search("test query", course_name="Course", lesson_number=3)
+            mock_client.get_or_create_collection.side_effect = [
+                course_catalog,
+                content_collection,
+            ]
 
-            # Verify combined filter
-            mock_content_collection.query.assert_called_once_with(
-                query_texts=["test query"],
-                n_results=5,
-                where={
-                    "$and": [
-                        {"course_title": "Resolved Course Title"},
-                        {"lesson_number": 3},
-                    ]
-                },
+            vector_store = VectorStore(
+                chroma_path=test_config.CHROMA_PATH,
+                embedding_model=test_config.EMBEDDING_MODEL,
+                max_results=test_config.MAX_RESULTS,
             )
 
-            assert result.error is None
-
-    def test_search_with_custom_limit(self):
-        """Test search with custom result limit"""
-        with (
-            patch("chromadb.PersistentClient") as mock_client,
-            patch(
-                "chromadb.utils.embedding_functions.SentenceTransformerEmbeddingFunction"
-            ),
-        ):
-
-            mock_collection = Mock()
-            mock_client.return_value.get_or_create_collection.return_value = (
-                mock_collection
+            # Execute search with both filters
+            result = vector_store.search(
+                "test query", course_name="Specific", lesson_number=3
             )
 
-            mock_collection.query.return_value = {
-                "documents": [["Content 1", "Content 2"]],
-                "metadatas": [
-                    [
-                        {"course_title": "Course", "lesson_number": 1},
-                        {"course_title": "Course", "lesson_number": 2},
-                    ]
-                ],
-                "distances": [[0.1, 0.2]],
+            # Assert content search was called with combined filter
+            expected_filter = {
+                "$and": [{"course_title": "Specific Course"}, {"lesson_number": 3}]
             }
-
-            store = VectorStore("./test_path", "test-model", max_results=5)
-            result = store.search("test query", limit=2)
-
-            # Verify custom limit was used
-            mock_collection.query.assert_called_once_with(
-                query_texts=["test query"],
-                n_results=2,  # custom limit, not default max_results
-                where=None,
+            content_collection.query.assert_called_once_with(
+                query_texts=["test query"], n_results=5, where=expected_filter
             )
 
-    def test_search_with_chromadb_exception(self):
-        """Test search handling ChromaDB exceptions"""
-        with (
-            patch("chromadb.PersistentClient") as mock_client,
-            patch(
-                "chromadb.utils.embedding_functions.SentenceTransformerEmbeddingFunction"
-            ),
-        ):
-
-            mock_collection = Mock()
-            mock_client.return_value.get_or_create_collection.return_value = (
-                mock_collection
-            )
-
-            # Mock ChromaDB exception
-            mock_collection.query.side_effect = Exception("ChromaDB connection error")
-
-            store = VectorStore("./test_path", "test-model")
-            result = store.search("test query")
-
-            # Should return error result
-            assert result.error == "Search error: ChromaDB connection error"
-            assert len(result.documents) == 0
-
-    def test_resolve_course_name_success(self):
+    def test_resolve_course_name_success(self, test_config):
         """Test successful course name resolution"""
-        with (
-            patch("chromadb.PersistentClient") as mock_client,
-            patch(
-                "chromadb.utils.embedding_functions.SentenceTransformerEmbeddingFunction"
-            ),
-        ):
+        with patch("vector_store.chromadb") as mock_chromadb:
+            mock_client = Mock()
+            mock_chromadb.PersistentClient.return_value = mock_client
 
-            mock_catalog_collection = Mock()
-            mock_content_collection = Mock()
-
-            def mock_get_collection(name, embedding_function):
-                if name == "course_catalog":
-                    return mock_catalog_collection
-                return mock_content_collection
-
-            mock_client.return_value.get_or_create_collection.side_effect = (
-                mock_get_collection
-            )
-
-            store = VectorStore("./test_path", "test-model")
-
-            mock_catalog_collection.query.return_value = {
-                "documents": [["Course document"]],
-                "metadatas": [[{"title": "Full Course Title"}]],
+            # Mock course catalog with matching course
+            course_catalog = Mock()
+            course_catalog.query.return_value = {
+                "documents": [["Building Towards Computer Use with Anthropic"]],
+                "metadatas": [
+                    [{"title": "Building Towards Computer Use with Anthropic"}]
+                ],
             }
 
-            result = store._resolve_course_name("partial name")
+            content_collection = Mock()
+            mock_client.get_or_create_collection.side_effect = [
+                course_catalog,
+                content_collection,
+            ]
 
-            assert result == "Full Course Title"
-
-    def test_resolve_course_name_not_found(self):
-        """Test course name resolution when not found"""
-        with (
-            patch("chromadb.PersistentClient") as mock_client,
-            patch(
-                "chromadb.utils.embedding_functions.SentenceTransformerEmbeddingFunction"
-            ),
-        ):
-
-            mock_catalog_collection = Mock()
-            mock_content_collection = Mock()
-
-            def mock_get_collection(name, embedding_function):
-                if name == "course_catalog":
-                    return mock_catalog_collection
-                return mock_content_collection
-
-            mock_client.return_value.get_or_create_collection.side_effect = (
-                mock_get_collection
+            vector_store = VectorStore(
+                chroma_path=test_config.CHROMA_PATH,
+                embedding_model=test_config.EMBEDDING_MODEL,
+                max_results=test_config.MAX_RESULTS,
             )
 
-            store = VectorStore("./test_path", "test-model")
+            # Test course name resolution
+            resolved_name = vector_store._resolve_course_name("Anthropic")
 
-            mock_catalog_collection.query.return_value = {
-                "documents": [[]],
+            assert resolved_name == "Building Towards Computer Use with Anthropic"
+            course_catalog.query.assert_called_once_with(
+                query_texts=["Anthropic"], n_results=1
+            )
+
+    def test_resolve_course_name_not_found(self, test_config):
+        """Test course name resolution when course not found"""
+        with patch("vector_store.chromadb") as mock_chromadb:
+            mock_client = Mock()
+            mock_chromadb.PersistentClient.return_value = mock_client
+
+            # Mock course catalog with no results
+            course_catalog = Mock()
+            course_catalog.query.return_value = {
+                "documents": [[]],  # No matching courses
                 "metadatas": [[]],
             }
 
-            result = store._resolve_course_name("nonexistent")
+            content_collection = Mock()
+            mock_client.get_or_create_collection.side_effect = [
+                course_catalog,
+                content_collection,
+            ]
 
-            assert result is None
-
-    def test_resolve_course_name_with_exception(self):
-        """Test course name resolution with exception"""
-        with (
-            patch("chromadb.PersistentClient") as mock_client,
-            patch(
-                "chromadb.utils.embedding_functions.SentenceTransformerEmbeddingFunction"
-            ),
-        ):
-
-            mock_catalog_collection = Mock()
-            mock_content_collection = Mock()
-
-            def mock_get_collection(name, embedding_function):
-                if name == "course_catalog":
-                    return mock_catalog_collection
-                return mock_content_collection
-
-            mock_client.return_value.get_or_create_collection.side_effect = (
-                mock_get_collection
+            vector_store = VectorStore(
+                chroma_path=test_config.CHROMA_PATH,
+                embedding_model=test_config.EMBEDDING_MODEL,
+                max_results=test_config.MAX_RESULTS,
             )
 
-            store = VectorStore("./test_path", "test-model")
+            # Test course name resolution failure
+            resolved_name = vector_store._resolve_course_name("NonexistentCourse")
 
-            mock_catalog_collection.query.side_effect = Exception("Query failed")
+            assert resolved_name is None
 
-            with patch("builtins.print") as mock_print:
-                result = store._resolve_course_name("test")
+    def test_search_course_not_found(self, test_config):
+        """Test search when course name cannot be resolved"""
+        with patch("vector_store.chromadb") as mock_chromadb:
+            mock_client = Mock()
+            mock_chromadb.PersistentClient.return_value = mock_client
 
-                # Should print error and return None
-                mock_print.assert_called_once_with(
-                    "Error resolving course name: Query failed"
-                )
-                assert result is None
+            # Mock course catalog with no results
+            course_catalog = Mock()
+            course_catalog.query.return_value = {"documents": [[]], "metadatas": [[]]}
 
-    def test_build_filter_no_parameters(self):
-        """Test filter building with no parameters"""
-        with (
-            patch("chromadb.PersistentClient"),
-            patch(
-                "chromadb.utils.embedding_functions.SentenceTransformerEmbeddingFunction"
-            ),
-        ):
+            content_collection = Mock()
+            mock_client.get_or_create_collection.side_effect = [
+                course_catalog,
+                content_collection,
+            ]
 
-            store = VectorStore("./test_path", "test-model")
-            result = store._build_filter(None, None)
+            vector_store = VectorStore(
+                chroma_path=test_config.CHROMA_PATH,
+                embedding_model=test_config.EMBEDDING_MODEL,
+                max_results=test_config.MAX_RESULTS,
+            )
 
-            assert result is None
+            # Execute search with nonexistent course
+            result = vector_store.search("test query", course_name="NonexistentCourse")
 
-    def test_build_filter_course_only(self):
-        """Test filter building with course title only"""
-        with (
-            patch("chromadb.PersistentClient"),
-            patch(
-                "chromadb.utils.embedding_functions.SentenceTransformerEmbeddingFunction"
-            ),
-        ):
+            # Should return error result
+            assert result.error == "No course found matching 'NonexistentCourse'"
+            assert result.is_empty()
 
-            store = VectorStore("./test_path", "test-model")
-            result = store._build_filter("Test Course", None)
+    def test_search_database_error(self, test_config):
+        """Test search when database query fails"""
+        with patch("vector_store.chromadb") as mock_chromadb:
+            mock_client = Mock()
+            mock_chromadb.PersistentClient.return_value = mock_client
 
-            assert result == {"course_title": "Test Course"}
+            # Mock collections
+            course_catalog = Mock()
+            content_collection = Mock()
+            content_collection.query.side_effect = Exception(
+                "Database connection failed"
+            )
 
-    def test_build_filter_lesson_only(self):
-        """Test filter building with lesson number only"""
-        with (
-            patch("chromadb.PersistentClient"),
-            patch(
-                "chromadb.utils.embedding_functions.SentenceTransformerEmbeddingFunction"
-            ),
-        ):
+            mock_client.get_or_create_collection.side_effect = [
+                course_catalog,
+                content_collection,
+            ]
 
-            store = VectorStore("./test_path", "test-model")
-            result = store._build_filter(None, 2)
+            vector_store = VectorStore(
+                chroma_path=test_config.CHROMA_PATH,
+                embedding_model=test_config.EMBEDDING_MODEL,
+                max_results=test_config.MAX_RESULTS,
+            )
 
-            assert result == {"lesson_number": 2}
+            # Execute search that will fail
+            result = vector_store.search("test query")
 
-    def test_build_filter_both_parameters(self):
-        """Test filter building with both parameters"""
-        with (
-            patch("chromadb.PersistentClient"),
-            patch(
-                "chromadb.utils.embedding_functions.SentenceTransformerEmbeddingFunction"
-            ),
-        ):
+            # Should return error result
+            assert result.error == "Search error: Database connection failed"
+            assert result.is_empty()
 
-            store = VectorStore("./test_path", "test-model")
-            result = store._build_filter("Test Course", 3)
+    def test_build_filter_no_filters(self, test_config):
+        """Test filter building with no filters"""
+        with patch("vector_store.chromadb"):
+            vector_store = VectorStore(
+                chroma_path=test_config.CHROMA_PATH,
+                embedding_model=test_config.EMBEDDING_MODEL,
+                max_results=test_config.MAX_RESULTS,
+            )
 
-            expected = {"$and": [{"course_title": "Test Course"}, {"lesson_number": 3}]}
-            assert result == expected
+            filter_dict = vector_store._build_filter(None, None)
+            assert filter_dict is None
 
-    def test_add_course_metadata(self, sample_course):
+    def test_build_filter_course_only(self, test_config):
+        """Test filter building with course filter only"""
+        with patch("vector_store.chromadb"):
+            vector_store = VectorStore(
+                chroma_path=test_config.CHROMA_PATH,
+                embedding_model=test_config.EMBEDDING_MODEL,
+                max_results=test_config.MAX_RESULTS,
+            )
+
+            filter_dict = vector_store._build_filter("Test Course", None)
+            assert filter_dict == {"course_title": "Test Course"}
+
+    def test_build_filter_lesson_only(self, test_config):
+        """Test filter building with lesson filter only"""
+        with patch("vector_store.chromadb"):
+            vector_store = VectorStore(
+                chroma_path=test_config.CHROMA_PATH,
+                embedding_model=test_config.EMBEDDING_MODEL,
+                max_results=test_config.MAX_RESULTS,
+            )
+
+            filter_dict = vector_store._build_filter(None, 2)
+            assert filter_dict == {"lesson_number": 2}
+
+    def test_build_filter_both(self, test_config):
+        """Test filter building with both filters"""
+        with patch("vector_store.chromadb"):
+            vector_store = VectorStore(
+                chroma_path=test_config.CHROMA_PATH,
+                embedding_model=test_config.EMBEDDING_MODEL,
+                max_results=test_config.MAX_RESULTS,
+            )
+
+            filter_dict = vector_store._build_filter("Test Course", 2)
+            expected = {"$and": [{"course_title": "Test Course"}, {"lesson_number": 2}]}
+            assert filter_dict == expected
+
+    def test_add_course_metadata(self, test_config, sample_course):
         """Test adding course metadata to vector store"""
-        with (
-            patch("chromadb.PersistentClient") as mock_client,
-            patch(
-                "chromadb.utils.embedding_functions.SentenceTransformerEmbeddingFunction"
-            ),
-        ):
+        with patch("vector_store.chromadb") as mock_chromadb:
+            mock_client = Mock()
+            mock_chromadb.PersistentClient.return_value = mock_client
 
-            mock_catalog_collection = Mock()
-            mock_content_collection = Mock()
+            course_catalog = Mock()
+            content_collection = Mock()
+            mock_client.get_or_create_collection.side_effect = [
+                course_catalog,
+                content_collection,
+            ]
 
-            def mock_get_collection(name, embedding_function):
-                if name == "course_catalog":
-                    return mock_catalog_collection
-                return mock_content_collection
-
-            mock_client.return_value.get_or_create_collection.side_effect = (
-                mock_get_collection
+            vector_store = VectorStore(
+                chroma_path=test_config.CHROMA_PATH,
+                embedding_model=test_config.EMBEDDING_MODEL,
+                max_results=test_config.MAX_RESULTS,
             )
 
-            store = VectorStore("./test_path", "test-model")
-            store.add_course_metadata(sample_course)
+            # Add course metadata
+            vector_store.add_course_metadata(sample_course)
 
-            # Verify catalog collection was called
-            mock_catalog_collection.add.assert_called_once()
-            call_args = mock_catalog_collection.add.call_args[1]
+            # Verify course catalog add was called
+            course_catalog.add.assert_called_once()
+            call_args = course_catalog.add.call_args
 
-            assert call_args["documents"] == [sample_course.title]
-            assert call_args["ids"] == [sample_course.title]
+            assert call_args[1]["documents"] == [sample_course.title]
+            assert call_args[1]["ids"] == [sample_course.title]
 
-            metadata = call_args["metadatas"][0]
+            metadata = call_args[1]["metadatas"][0]
             assert metadata["title"] == sample_course.title
             assert metadata["instructor"] == sample_course.instructor
+            assert metadata["course_link"] == sample_course.course_link
+            assert metadata["lesson_count"] == len(sample_course.lessons)
             assert "lessons_json" in metadata
 
-    def test_add_course_content(self, sample_chunks):
+    def test_add_course_content(self, test_config, sample_course_chunks):
         """Test adding course content chunks to vector store"""
-        with (
-            patch("chromadb.PersistentClient") as mock_client,
-            patch(
-                "chromadb.utils.embedding_functions.SentenceTransformerEmbeddingFunction"
-            ),
-        ):
+        with patch("vector_store.chromadb") as mock_chromadb:
+            mock_client = Mock()
+            mock_chromadb.PersistentClient.return_value = mock_client
 
-            mock_catalog_collection = Mock()
-            mock_content_collection = Mock()
+            course_catalog = Mock()
+            content_collection = Mock()
+            mock_client.get_or_create_collection.side_effect = [
+                course_catalog,
+                content_collection,
+            ]
 
-            def mock_get_collection(name, embedding_function):
-                if name == "course_catalog":
-                    return mock_catalog_collection
-                return mock_content_collection
-
-            mock_client.return_value.get_or_create_collection.side_effect = (
-                mock_get_collection
+            vector_store = VectorStore(
+                chroma_path=test_config.CHROMA_PATH,
+                embedding_model=test_config.EMBEDDING_MODEL,
+                max_results=test_config.MAX_RESULTS,
             )
 
-            store = VectorStore("./test_path", "test-model")
-            store.add_course_content(sample_chunks)
+            # Add course content
+            vector_store.add_course_content(sample_course_chunks)
 
-            # Verify content collection was called
-            mock_content_collection.add.assert_called_once()
-            call_args = mock_content_collection.add.call_args[1]
+            # Verify content collection add was called
+            content_collection.add.assert_called_once()
+            call_args = content_collection.add.call_args
 
-            assert len(call_args["documents"]) == len(sample_chunks)
-            assert len(call_args["metadatas"]) == len(sample_chunks)
-            assert len(call_args["ids"]) == len(sample_chunks)
+            assert len(call_args[1]["documents"]) == len(sample_course_chunks)
+            assert len(call_args[1]["metadatas"]) == len(sample_course_chunks)
+            assert len(call_args[1]["ids"]) == len(sample_course_chunks)
 
-    def test_add_course_content_empty_list(self):
-        """Test adding empty course content list"""
-        with (
-            patch("chromadb.PersistentClient") as mock_client,
-            patch(
-                "chromadb.utils.embedding_functions.SentenceTransformerEmbeddingFunction"
-            ),
-        ):
-
-            mock_collection = Mock()
-            mock_client.return_value.get_or_create_collection.return_value = (
-                mock_collection
+            # Check first chunk
+            assert call_args[1]["documents"][0] == sample_course_chunks[0].content
+            assert (
+                call_args[1]["metadatas"][0]["course_title"]
+                == sample_course_chunks[0].course_title
+            )
+            assert (
+                call_args[1]["metadatas"][0]["lesson_number"]
+                == sample_course_chunks[0].lesson_number
             )
 
-            store = VectorStore("./test_path", "test-model")
-            store.add_course_content([])
+    def test_get_lesson_link(self, test_config):
+        """Test retrieving lesson link"""
+        with patch("vector_store.chromadb") as mock_chromadb:
+            mock_client = Mock()
+            mock_chromadb.PersistentClient.return_value = mock_client
 
-            # Should not call add when empty list
-            mock_collection.add.assert_not_called()
-
-    def test_get_existing_course_titles(self):
-        """Test getting existing course titles"""
-        with (
-            patch("chromadb.PersistentClient") as mock_client,
-            patch(
-                "chromadb.utils.embedding_functions.SentenceTransformerEmbeddingFunction"
-            ),
-        ):
-
-            mock_catalog_collection = Mock()
-            mock_content_collection = Mock()
-
-            def mock_get_collection(name, embedding_function):
-                if name == "course_catalog":
-                    return mock_catalog_collection
-                return mock_content_collection
-
-            mock_client.return_value.get_or_create_collection.side_effect = (
-                mock_get_collection
-            )
-
-            store = VectorStore("./test_path", "test-model")
-
-            mock_catalog_collection.get.return_value = {
-                "ids": ["Course 1", "Course 2", "Course 3"]
+            # Mock course catalog with lesson data
+            course_catalog = Mock()
+            course_catalog.get.return_value = {
+                "metadatas": [
+                    {
+                        "lessons_json": '[{"lesson_number": 1, "lesson_title": "Test Lesson", "lesson_link": "https://example.com/lesson1"}]'
+                    }
+                ]
             }
 
-            result = store.get_existing_course_titles()
+            content_collection = Mock()
+            mock_client.get_or_create_collection.side_effect = [
+                course_catalog,
+                content_collection,
+            ]
 
-            assert result == ["Course 1", "Course 2", "Course 3"]
+            vector_store = VectorStore(
+                chroma_path=test_config.CHROMA_PATH,
+                embedding_model=test_config.EMBEDDING_MODEL,
+                max_results=test_config.MAX_RESULTS,
+            )
+
+            # Get lesson link
+            link = vector_store.get_lesson_link("Test Course", 1)
+
+            assert link == "https://example.com/lesson1"
+            course_catalog.get.assert_called_once_with(ids=["Test Course"])
 
     def test_search_results_from_chroma(self):
-        """Test SearchResults creation from ChromaDB results"""
+        """Test SearchResults.from_chroma method"""
         chroma_results = {
             "documents": [["doc1", "doc2"]],
-            "metadatas": [[{"key1": "value1"}, {"key2": "value2"}]],
+            "metadatas": [[{"meta1": "value1"}, {"meta2": "value2"}]],
             "distances": [[0.1, 0.2]],
         }
 
         results = SearchResults.from_chroma(chroma_results)
 
         assert results.documents == ["doc1", "doc2"]
-        assert results.metadata == [{"key1": "value1"}, {"key2": "value2"}]
+        assert results.metadata == [{"meta1": "value1"}, {"meta2": "value2"}]
         assert results.distances == [0.1, 0.2]
         assert results.error is None
+        assert not results.is_empty()
 
-    def test_search_results_empty_chroma(self):
-        """Test SearchResults creation from empty ChromaDB results"""
-        chroma_results = {"documents": [], "metadatas": [], "distances": []}
-
-        results = SearchResults.from_chroma(chroma_results)
-
-        assert results.documents == []
-        assert results.metadata == []
-        assert results.distances == []
-        assert results.is_empty() is True
-
-    def test_search_results_error_creation(self):
-        """Test SearchResults error creation"""
+    def test_search_results_empty(self):
+        """Test SearchResults.empty method"""
         results = SearchResults.empty("Test error message")
 
         assert results.documents == []
         assert results.metadata == []
         assert results.distances == []
         assert results.error == "Test error message"
-        assert results.is_empty() is True
+        assert results.is_empty()

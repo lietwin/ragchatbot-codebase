@@ -35,10 +35,12 @@ function setupEventListeners() {
     // New chat button
     newChatButton.addEventListener('click', startNewChat);
     
-    // Theme toggle button
+    // Theme toggle
     themeToggle.addEventListener('click', toggleTheme);
-    themeToggle.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter' || e.key === ' ') {
+    
+    // Keyboard shortcut for theme toggle (Ctrl/Cmd + Shift + T)
+    document.addEventListener('keydown', (e) => {
+        if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'T') {
             e.preventDefault();
             toggleTheme();
         }
@@ -96,7 +98,7 @@ async function sendMessage() {
 
         // Replace loading message with response
         loadingMessage.remove();
-        addMessage(data.answer, 'assistant', data.sources);
+        addMessage(data.answer, 'assistant', data.sources, data.source_links);
 
     } catch (error) {
         // Replace loading message with error
@@ -124,7 +126,7 @@ function createLoadingMessage() {
     return messageDiv;
 }
 
-function addMessage(content, type, sources = null, isWelcome = false) {
+function addMessage(content, type, sources = null, sourceLinks = null, isWelcome = false) {
     const messageId = Date.now();
     const messageDiv = document.createElement('div');
     messageDiv.className = `message ${type}${isWelcome ? ' welcome-message' : ''}`;
@@ -136,25 +138,20 @@ function addMessage(content, type, sources = null, isWelcome = false) {
     let html = `<div class="message-content">${displayContent}</div>`;
     
     if (sources && sources.length > 0) {
-        // Handle both old string format and new object format for backwards compatibility
-        const sourceLinks = sources.map(source => {
-            if (typeof source === 'string') {
-                // Old format - just return the text
+        // Create sources with clickable links when available
+        const sourcesHtml = sources.map((source, index) => {
+            const link = sourceLinks && sourceLinks[index];
+            if (link) {
+                return `<a href="${link}" target="_blank" class="source-link">${source}</a>`;
+            } else {
                 return source;
-            } else if (source.text && source.link) {
-                // New format with link - create clickable link
-                return `<a href="${source.link}" target="_blank" rel="noopener noreferrer">${source.text}</a>`;
-            } else if (source.text) {
-                // New format without link - just return text
-                return source.text;
             }
-            return '';
-        }).filter(s => s); // Remove empty strings
+        }).join(', ');
         
         html += `
             <details class="sources-collapsible">
                 <summary class="sources-header">Sources</summary>
-                <div class="sources-content">${sourceLinks.join(', ')}</div>
+                <div class="sources-content">${sourcesHtml}</div>
             </details>
         `;
     }
@@ -175,14 +172,36 @@ function escapeHtml(text) {
 
 // Removed removeMessage function - no longer needed since we handle loading differently
 
-function startNewChat() {
-    createNewSession();
+async function startNewChat() {
+    // Clear the current session on backend if exists
+    if (currentSessionId) {
+        try {
+            await fetch(`${API_URL}/clear-session`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    session_id: currentSessionId
+                })
+            });
+        } catch (error) {
+            console.error('Error clearing session:', error);
+            // Continue with frontend cleanup even if backend fails
+        }
+    }
+    
+    // Clear frontend state and UI
+    await createNewSession();
 }
 
 async function createNewSession() {
     currentSessionId = null;
     chatMessages.innerHTML = '';
-    addMessage('Welcome to the Course Materials Assistant! I can help you with questions about courses, lessons and specific content. What would you like to know?', 'assistant', null, true);
+    chatInput.value = '';
+    chatInput.disabled = false;
+    sendButton.disabled = false;
+    addMessage('Welcome! I can help you with questions about courses, lessons and specific content. What would you like to know?', 'assistant', null, null, true);
 }
 
 // Load course statistics
@@ -225,58 +244,26 @@ async function loadCourseStats() {
 
 // Theme Functions
 function initializeTheme() {
-    // Check for saved theme preference or default to dark theme
-    const savedTheme = localStorage.getItem('theme');
-    const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-    
-    if (savedTheme === 'light' || (savedTheme === null && !prefersDark)) {
-        document.documentElement.classList.add('light-theme');
-        updateThemeButtonAriaLabel('Switch to dark theme');
-    } else {
-        document.documentElement.classList.remove('light-theme');
-        updateThemeButtonAriaLabel('Switch to light theme');
-    }
+    // Get saved theme preference or default to dark
+    const savedTheme = localStorage.getItem('theme') || 'dark';
+    setTheme(savedTheme);
 }
 
 function toggleTheme() {
-    const isLight = document.documentElement.classList.contains('light-theme');
-    
-    if (isLight) {
-        // Switch to dark theme
-        document.documentElement.classList.remove('light-theme');
-        localStorage.setItem('theme', 'dark');
-        updateThemeButtonAriaLabel('Switch to light theme');
+    const currentTheme = document.documentElement.getAttribute('data-theme');
+    const newTheme = currentTheme === 'light' ? 'dark' : 'light';
+    setTheme(newTheme);
+}
+
+function setTheme(theme) {
+    if (theme === 'light') {
+        document.documentElement.setAttribute('data-theme', 'light');
+        themeToggle.setAttribute('aria-label', 'Switch to dark theme');
     } else {
-        // Switch to light theme
-        document.documentElement.classList.add('light-theme');
-        localStorage.setItem('theme', 'light');
-        updateThemeButtonAriaLabel('Switch to dark theme');
+        document.documentElement.removeAttribute('data-theme');
+        themeToggle.setAttribute('aria-label', 'Switch to light theme');
     }
     
-    // Add a subtle animation effect
-    themeToggle.style.transform = 'scale(0.9)';
-    setTimeout(() => {
-        themeToggle.style.transform = '';
-    }, 100);
+    // Save theme preference
+    localStorage.setItem('theme', theme);
 }
-
-function updateThemeButtonAriaLabel(label) {
-    if (themeToggle) {
-        themeToggle.setAttribute('aria-label', label);
-        themeToggle.setAttribute('title', label);
-    }
-}
-
-// Listen for system theme changes
-window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (e) => {
-    // Only update if no theme preference is saved
-    if (!localStorage.getItem('theme')) {
-        if (e.matches) {
-            document.documentElement.classList.remove('light-theme');
-            updateThemeButtonAriaLabel('Switch to light theme');
-        } else {
-            document.documentElement.classList.add('light-theme');
-            updateThemeButtonAriaLabel('Switch to dark theme');
-        }
-    }
-});
