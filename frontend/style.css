@@ -71,38 +71,15 @@ body {
     padding: 0;
 }
 
-/* Header - Visible with theme toggle */
-header {
-    padding: 1rem 2rem;
-    background: var(--surface);
-    border-bottom: 1px solid var(--border-color);
-    flex-shrink: 0;
-}
+/* Removed header styles */
 
-.header-content {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-}
-
-.header-text {
-    flex: 1;
-}
-
-header h1 {
-    font-size: 1.75rem;
-    font-weight: 700;
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-    background-clip: text;
-    margin: 0;
-}
-
-.subtitle {
-    font-size: 0.95rem;
-    color: var(--text-secondary);
-    margin-top: 0.5rem;
+/* Floating Theme Toggle Button */
+.theme-toggle-floating {
+    position: fixed;
+    top: 1rem;
+    right: 1rem;
+    z-index: 1000;
+    box-shadow: var(--shadow);
 }
 
 /* Theme Toggle Button */
@@ -838,24 +815,9 @@ details[open] .suggested-header::before {
         order: 1;
     }
     
-    header {
-        padding: 1rem;
-    }
-    
-    .header-content {
-        flex-direction: column;
-        gap: 1rem;
-        align-items: flex-start;
-    }
-    
-    .theme-toggle {
-        align-self: flex-end;
+    .theme-toggle-floating {
         width: 40px;
         height: 40px;
-    }
-    
-    header h1 {
-        font-size: 1.5rem;
     }
     
     .chat-messages {
