@@ -84,7 +84,6 @@ body {
 
 /* Theme Toggle Button */
 .theme-toggle {
-    position: relative;
     width: 44px;
     height: 44px;
     border: none;
@@ -97,6 +96,11 @@ body {
     align-items: center;
     justify-content: center;
     transition: all 0.3s ease;
+}
+
+/* Override position for non-floating theme toggles if needed */
+.theme-toggle:not(.theme-toggle-floating) {
+    position: relative;
     overflow: hidden;
 }
 

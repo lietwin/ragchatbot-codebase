@@ -201,7 +201,6 @@ async function createNewSession() {
     chatInput.value = '';
     chatInput.disabled = false;
     sendButton.disabled = false;
-    addMessage('Welcome! I can help you with questions about courses, lessons and specific content. What would you like to know?', 'assistant', null, null, true);
 }
 
 // Load course statistics
